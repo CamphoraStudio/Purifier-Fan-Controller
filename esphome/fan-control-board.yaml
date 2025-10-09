@@ -44,6 +44,20 @@ sensor:
             }
             id(knob_position).publish_state(knob_position_level * 100.0);
 
+  # This sensor gets the Wi-Fi channel. It will be a number (e.g., 1, 6, 11).
+  - platform: template
+    name: "WiFi Channel"
+    id: wifi_channel
+    lambda: |-
+      if (wifi::global_wifi_component->is_connected()) {
+        return wifi::global_wifi_component->get_wifi_channel();
+      } else {
+        return NAN; // Return Not-a-Number if not connected
+      }
+    update_interval: 10s
+    accuracy_decimals: 0
+    icon: "mdi:radio-tower"
+
   # Exposed sensor for the physical knob's position.
   - platform: template
     name: "Knob Position"
@@ -140,3 +154,4 @@ espnow:
         // Corrected the function name to format_mac_address_pretty
         ESP_LOGD("espnow_receive", "Received broadcast from %s: %s",
                  format_mac_address_pretty(info.src_addr).c_str(), data_str.c_str());
+
