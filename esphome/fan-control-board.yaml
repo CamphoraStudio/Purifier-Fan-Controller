@@ -30,7 +30,7 @@ sensor:
     on_value:
       then:
         - lambda: |-
-            const float OFF_ZONE_VOLTAGE = 0.25f;
+            const float OFF_ZONE_VOLTAGE = 0.1f;
             const float GUARD_BAND_VOLTAGE = 2.75f;
             float knob_position_level = 0.0f;
 
@@ -103,7 +103,6 @@ sensor:
     update_interval: 2s
     filters:
       - multiply: 0.5 # Convert Pulses/Min to Revolutions/Min (2 pulses per revolution)
-      - round: 0
     unit_of_measurement: "RPM"
     icon: "mdi:fan-clock"
 
