@@ -1,6 +1,6 @@
 # Add a substitution for the fan speed offset in the 0.0-1.0 scale
 substitutions:
-  fan_offset_step: "0.01" # Stagger each fan speed by 1% (0.01)
+  fan_offset_step: "0.01f" # Stagger each fan speed by 1% (0.01)
 
 esp32:
   board: esp32-c3-devkitm-1
