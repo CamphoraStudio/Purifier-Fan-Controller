@@ -1,0 +1,92 @@
+# Add a substitution for the fan speed offset percentage
+substitutions:
+  fan_offset_step: "1.0" # Stagger each fan speed by 1.0%
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: esp-idf
+
+globals:
+  - id: manual_fan_speed_state
+    type: float
+    initial_value: '0.0'
+    restore_value: yes
+
+sensor:
+  - platform: adc
+    pin: GPIO0
+    id: fan_speed_input
+    attenuation: auto
+    internal: true
+    update_interval: 250ms
+    filters:
+      - sliding_window_moving_average:
+          window_size: 4
+          send_every: 1
+    on_value:
+      then:
+        - lambda: |-
+            // Define voltage range for the potentiometer
+            const float min_voltage = 0.1; 
+            const float max_voltage = 3.1;
+            
+            // Calculate the primary target speed (0.0 to 1.0)
+            float target_level = clamp((x - min_voltage) / (max_voltage - min_voltage), 0.0f, 1.0f);
+            
+            // Update the number component for display/API
+            id(manual_fan_speed).publish_state(target_level * 100.0);
+
+            // Set staggered speeds for each fan to avoid harmonics
+            id(pwm_fan_1).set_level(target_level);
+            id(pwm_fan_2).set_level(clamp(target_level - (1 * ${fan_offset_step} / 100.0), 0.0f, 1.0f));
+            id(pwm_fan_3).set_level(clamp(target_level - (2 * ${fan_offset_step} / 100.0), 0.0f, 1.0f));
+            id(pwm_fan_4).set_level(clamp(target_level - (3 * ${fan_offset_step} / 100.0), 0.0f, 1.0f));
+            id(pwm_fan_5).set_level(clamp(target_level - (4 * ${fan_offset_step} / 100.0), 0.0f, 1.0f));
+
+number:
+  - platform: template
+    name: "Manual Fan Speed"
+    id: manual_fan_speed
+    min_value: 0
+    max_value: 100
+    step: 1
+    # This number component will now set the global variable, but the ADC lambda is what controls the fans directly.
+    # This allows HA or other services to change the "target" speed later.
+    lambda: 'return id(manual_fan_speed_state);'
+    set_action:
+      - globals.set:
+          id: manual_fan_speed_state
+          value: !lambda 'return x;'
+
+# Turns on the 12V fan power rail at boot and keeps it on.
+switch:
+  - platform: gpio
+    pin: GPIO18
+    id: enable_12v
+    name: "12V Rail"
+    internal: false
+    restore_mode: ALWAYS_ON
+
+# Define all 5 PWM fan outputs
+output:
+  - platform: ledc
+    pin: GPIO3
+    id: pwm_fan_1
+    frequency: 25000 Hz
+  - platform: ledc
+    pin: GPIO4
+    id: pwm_fan_2
+    frequency: 25000 Hz
+  - platform: ledc
+    pin: GPIO5
+    id: pwm_fan_3
+    frequency: 25000 Hz
+  - platform: ledc
+    pin: GPIO6
+    id: pwm_fan_4
+    frequency: 25000 Hz
+  - platform: ledc
+    pin: GPIO7
+    id: pwm_fan_5
+    frequency: 25000 Hz

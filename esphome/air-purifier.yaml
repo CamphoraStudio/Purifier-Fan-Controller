@@ -37,4 +37,4 @@ wifi:
 captive_portal:
 
 packages:
-  device: !include device.yaml
+  device: !include fan-control-board.yaml
