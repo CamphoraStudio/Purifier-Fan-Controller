@@ -105,6 +105,7 @@ sensor:
       - multiply: 0.5 # Convert Pulses/Min to Revolutions/Min (2 pulses per revolution)
     unit_of_measurement: "RPM"
     icon: "mdi:fan-clock"
+    accuracy_decimals: 0
 
 # Define all 5 PWM fan outputs.
 output:
