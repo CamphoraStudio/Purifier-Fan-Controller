@@ -6,18 +6,22 @@ esp32:
   framework:
     type: esp-idf
 
-globals:
-  - id: manual_fan_speed_state
-    type: float
-    initial_value: '0.0'
-    restore_value: yes
+# Turns on the 12V fan power rail at boot and keeps it on.
+switch:
+  - platform: gpio
+    pin: GPIO18
+    id: enable_12v
+    name: "12V Rail"
+    internal: false
+    restore_mode: ALWAYS_ON
 
 sensor:
+  # 1. Internal sensor to read the raw potentiometer voltage
   - platform: adc
     pin: GPIO0
-    id: fan_speed_input
+    id: raw_potentiometer_voltage 
     attenuation: auto
-    internal: true
+    internal: true # This is a private, internal value
     update_interval: 250ms
     filters:
       - sliding_window_moving_average:
@@ -25,55 +29,87 @@ sensor:
           send_every: 1
     on_value:
       then:
+        # convert voltage to Base Speed %
         - lambda: |-
             const float OFF_ZONE_VOLTAGE = 0.25f;
             const float GUARD_BAND_VOLTAGE = 2.75f;
-            float target_level = 0.0f;
+            float base_speed_level = 0.0f; // Represents 0-100% as a 0.0-1.0 float
 
             if (x < OFF_ZONE_VOLTAGE) {
-              // 1. Stable Off Zone
-              target_level = 0.0f;
+              base_speed_level = 0.0f;
             } else if (x > GUARD_BAND_VOLTAGE) {
-              // 2. Guard Band
-              target_level = 1.0f;
+              base_speed_level = 1.0f;
             } else {
-              // 3. Linear Mapping from 0% to 100%
-              target_level = (x - OFF_ZONE_VOLTAGE) / (GUARD_BAND_VOLTAGE - OFF_ZONE_VOLTAGE);
+              // Linearly map voltage from 0% to 100% speed
+              base_speed_level = (x - OFF_ZONE_VOLTAGE) / (GUARD_BAND_VOLTAGE - OFF_ZONE_VOLTAGE);
             }
-            
-            // Publish to the 0-100 number component for the UI
-            id(manual_fan_speed).publish_state(target_level * 100.0);
 
-            // Set staggered speeds for each fan
-            id(pwm_fan_1).set_level(target_level);
-            id(pwm_fan_2).set_level(clamp(target_level - (1 * ${fan_offset_step}), 0.0f, 1.0f));
-            id(pwm_fan_3).set_level(clamp(target_level - (2 * ${fan_offset_step}), 0.0f, 1.0f));
-            id(pwm_fan_4).set_level(clamp(target_level - (3 * ${fan_offset_step}), 0.0f, 1.0f));
-            id(pwm_fan_5).set_level(clamp(target_level - (4 * ${fan_offset_step}), 0.0f, 1.0f));
+            // ==> ADD THIS LINE to see the calculated base speed (0.0-1.0) <==
+            ESP_LOGD("debug", "Calculated Base Speed: %.2f%%", base_speed_level * 100.0);
 
-number:
+            // Publish the result to the user-facing sensor
+            id(base_speed).publish_state(base_speed_level * 100.0);
+
+  # 2. User-facing sensor for Base Speed % (exposed to Home Assistant)
   - platform: template
-    name: "Manual Fan Speed"
-    id: manual_fan_speed
-    min_value: 0
-    max_value: 100
-    step: 1
-    # This number component will now set the global variable, but the ADC lambda is what controls the fans directly.
-    # This allows HA or other services to change the "target" speed later.
-    lambda: 'return id(manual_fan_speed_state);'
-    set_action:
-      - globals.set:
-          id: manual_fan_speed_state
-          value: !lambda 'return x;'
+    name: "Base Speed" 
+    id: base_speed
+    unit_of_measurement: "%"
+    icon: "mdi:knob"
+    accuracy_decimals: 1
+    on_value:
+      then:
+        # Fan Speed Calculation & PWM Output Mapping
+        - lambda: |-
+            // The input 'x' is the Base Speed in percent (0-100)
+            float base_speed_level = x / 100.0f;
 
-# Turns on the 12V fan power rail at boot and keeps it on.
-switch:
-  - platform: gpio
-    pin: GPIO18
-    id: enable_12v
-    name: "12V Rail"
-    internal: true
-    restore_mode: ALWAYS_ON
+            // --- Determine Target Speed %  ---
+            // In manual-only mode, Target Speed is just the Base Speed.
+            float target_speed_level = base_speed_level;
+
+            // ==> ADD THIS LINE to confirm the target speed <==
+            ESP_LOGD("debug", "Target Speed: %.2f%%", target_speed_level * 100.0);
+            
+            // --- Map Target Speed to Final PWM Output %  ---
+            if (target_speed_level == 0.0f) {
+              // If target speed is 0%, all fans are hard OFF.
+              id(pwm_fan_1).set_level(0.0f);
+              id(pwm_fan_2).set_level(0.0f);
+              id(pwm_fan_3).set_level(0.0f);
+              id(pwm_fan_4).set_level(0.0f);
+              id(pwm_fan_5).set_level(0.0f);
+            } else {
+              // If target speed > 0%, apply harmonic offsets and map to the 10%-100% PWM range.
+              auto calculate_pwm = [&](float speed) {
+                return 0.1f + (speed * 0.9f);
+              };
+              
+              float fan_1_target = target_speed_level;
+              float fan_2_target = clamp(target_speed_level - (1 * ${fan_offset_step}), 0.0f, 1.0f);
+              float fan_3_target = clamp(target_speed_level - (2 * ${fan_offset_step}), 0.0f, 1.0f);
+              float fan_4_target = clamp(target_speed_level - (3 * ${fan_offset_step}), 0.0f, 1.0f);
+              float fan_5_target = clamp(target_speed_level - (4 * ${fan_offset_step}), 0.0f, 1.0f);
+
+              id(pwm_fan_1).set_level(calculate_pwm(fan_1_target));
+              id(pwm_fan_2).set_level(calculate_pwm(fan_2_target));
+              id(pwm_fan_3).set_level(calculate_pwm(fan_3_target));
+              id(pwm_fan_4).set_level(calculate_pwm(fan_4_target));
+              id(pwm_fan_5).set_level(calculate_pwm(fan_5_target));
+            }
+
+  # 3. Tachometer Sensor 
+  - platform: pulse_counter
+    pin:
+      number: GPIO1
+      mode: INPUT_PULLUP # Required for open-drain tachometer signal
+    name: "Fan RPM"
+    id: fan_rpm
+    update_interval: 2s
+    filters:
+      - multiply: 30.0 # Standard conversion for 2 pulses per revolution (PPR)
+    unit_of_measurement: "RPM"
+    icon: "mdi:fan-clock"
 
 # Define all 5 PWM fan outputs
 output:
