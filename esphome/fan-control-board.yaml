@@ -129,3 +129,8 @@ output:
     pin: GPIO7
     id: pwm_fan_5
     frequency: 25000 Hz
+
+espnow:
+  on_packet:
+    - lambda: |-
+        ESP_LOGD("espnow_receive", "Received packet from %s: %s", mac_address.c_str(), data.c_str());
