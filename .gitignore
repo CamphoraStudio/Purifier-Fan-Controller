@@ -1,0 +1,45 @@
+# Secrets & Credentials
+*.env
+secrets.yaml
+*.secrets.yaml
+*.pem
+*.key
+
+# Operating System Files
+.DS_Store
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+__MACOSX/
+
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Python
+*.pyc
+__pycache__/
+venv/
+*.venv/
+env/
+*.env/
+.esphome/
+.pio/
+
+# Log & Temporary Files
+*.log
+*.tmp

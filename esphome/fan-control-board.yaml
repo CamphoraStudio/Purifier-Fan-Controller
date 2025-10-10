@@ -1,0 +1,157 @@
+substitutions:
+  fan_offset_step: "0.01f" # Stagger each fan speed by 1% (0.01)
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: esp-idf
+
+# Turns on the 12V fan power rail at boot and keeps it on.
+switch:
+  - platform: gpio
+    pin: GPIO18
+    id: enable_12v
+    name: "12V Rail"
+    internal: false
+    restore_mode: ALWAYS_ON
+
+sensor:
+  # Internal sensor to read the raw potentiometer voltage.
+  - platform: adc
+    pin: GPIO0
+    id: raw_potentiometer_voltage
+    attenuation: auto
+    internal: true
+    update_interval: 250ms
+    filters:
+      - sliding_window_moving_average:
+          window_size: 4
+          send_every: 1
+      - delta: 0.01
+    on_value:
+      then:
+        - lambda: |-
+            const float OFF_ZONE_VOLTAGE = 0.1f;
+            const float GUARD_BAND_VOLTAGE = 2.75f;
+            float knob_position_level = 0.0f;
+
+            if (x < OFF_ZONE_VOLTAGE) {
+              knob_position_level = 0.0f;
+            } else if (x > GUARD_BAND_VOLTAGE) {
+              knob_position_level = 1.0f;
+            } else {
+              knob_position_level = (x - OFF_ZONE_VOLTAGE) / (GUARD_BAND_VOLTAGE - OFF_ZONE_VOLTAGE);
+            }
+            id(knob_position).publish_state(knob_position_level * 100.0);
+
+  # This sensor gets the Wi-Fi channel. It will be a number (e.g., 1, 6, 11).
+  - platform: template
+    name: "WiFi Channel"
+    id: wifi_channel
+    lambda: |-
+      if (wifi::global_wifi_component->is_connected()) {
+        return wifi::global_wifi_component->get_wifi_channel();
+      } else {
+        return NAN; // Return Not-a-Number if not connected
+      }
+    update_interval: 10s
+    accuracy_decimals: 0
+    icon: "mdi:radio-tower"
+
+  # Exposed sensor for the physical knob's position.
+  - platform: template
+    name: "Knob Position"
+    id: knob_position
+    unit_of_measurement: "%"
+    icon: "mdi:knob"
+    accuracy_decimals: 1
+    on_value:
+      then:
+        # In manual mode, the Final Target Speed just mirrors the Knob Position.
+        - sensor.template.publish:
+            id: final_target_speed
+            state: !lambda 'return x;'
+
+  # Exposed sensor for the final, authoritative fan speed target.
+  - platform: template
+    name: "Final Target Speed"
+    id: final_target_speed
+    unit_of_measurement: "%"
+    icon: "mdi:fan-chevron-up"
+    accuracy_decimals: 1
+    on_value:
+      then:
+        - lambda: |-
+            float target_speed_level = x / 100.0f;
+            
+            if (target_speed_level == 0.0f) {
+              id(pwm_fan_1).set_level(0.0f);
+              id(pwm_fan_2).set_level(0.0f);
+              id(pwm_fan_3).set_level(0.0f);
+              id(pwm_fan_4).set_level(0.0f);
+              id(pwm_fan_5).set_level(0.0f);
+            } else {
+              auto calculate_pwm = [&](float speed) {
+                return 0.1f + (speed * 0.9f);
+              };
+              
+              float fan_1_target = target_speed_level;
+              float fan_2_target = clamp(target_speed_level - (1 * ${fan_offset_step}), 0.0f, 1.0f);
+              float fan_3_target = clamp(target_speed_level - (2 * ${fan_offset_step}), 0.0f, 1.0f);
+              float fan_4_target = clamp(target_speed_level - (3 * ${fan_offset_step}), 0.0f, 1.0f);
+              float fan_5_target = clamp(target_speed_level - (4 * ${fan_offset_step}), 0.0f, 1.0f);
+
+              id(pwm_fan_1).set_level(calculate_pwm(fan_1_target));
+              id(pwm_fan_2).set_level(calculate_pwm(fan_2_target));
+              id(pwm_fan_3).set_level(calculate_pwm(fan_3_target));
+              id(pwm_fan_4).set_level(calculate_pwm(fan_4_target));
+              id(pwm_fan_5).set_level(calculate_pwm(fan_5_target));
+            }
+
+  # Tachometer Sensor with corrected RPM calculation.
+  - platform: pulse_counter
+    pin:
+      number: GPIO1
+      mode: INPUT_PULLUP
+    name: "Fan RPM"
+    id: fan_rpm
+    update_interval: 2s
+    filters:
+      - multiply: 0.5 # Convert Pulses/Min to Revolutions/Min (2 pulses per revolution)
+    unit_of_measurement: "RPM"
+    icon: "mdi:fan-clock"
+    accuracy_decimals: 0
+
+# Define all 5 PWM fan outputs.
+output:
+  - platform: ledc
+    pin: GPIO3
+    id: pwm_fan_1
+    frequency: 25000 Hz
+  - platform: ledc
+    pin: GPIO4
+    id: pwm_fan_2
+    frequency: 25000 Hz
+  - platform: ledc
+    pin: GPIO5
+    id: pwm_fan_3
+    frequency: 25000 Hz
+  - platform: ledc
+    pin: GPIO6
+    id: pwm_fan_4
+    frequency: 25000 Hz
+  - platform: ledc
+    pin: GPIO7
+    id: pwm_fan_5
+    frequency: 25000 Hz
+
+espnow:
+  on_broadcast:
+    - lambda: |-
+        // Create a string from the received data to log it
+        std::string data_str(data, data + size);
+
+        // Corrected the function name to format_mac_address_pretty
+        ESP_LOGD("espnow_receive", "Received broadcast from %s: %s",
+                 format_mac_address_pretty(info.src_addr).c_str(), data_str.c_str());
+
