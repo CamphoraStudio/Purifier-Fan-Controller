@@ -148,10 +148,8 @@ output:
 espnow:
   on_broadcast:
     - lambda: |-
-        // Create a string from the received data to log it
+        ESP_LOGD("on_broadcast", "Broadcast trigger fired."); // A simple check
         std::string data_str(data, data + size);
-
-        // Corrected the function name to format_mac_address_pretty
-        ESP_LOGD("espnow_receive", "Received broadcast from %s: %s",
+        // Use ESP_LOGI to ensure the message is visible at INFO level and above
+        ESP_LOGI("espnow_receive", "Broadcast from %s: %s",
                  format_mac_address_pretty(info.src_addr).c_str(), data_str.c_str());
-
