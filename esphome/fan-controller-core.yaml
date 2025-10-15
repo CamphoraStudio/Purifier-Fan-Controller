@@ -149,14 +149,29 @@ output:
     frequency: 25000 Hz
 
 espnow:
-  on_unknown_peer: # <-- ADD THIS BLOCK
+  on_unknown_peer:
     - lambda: |-
-        ESP_LOGI("espnow_unknown_peer", "Received packet from UNKNOWN peer: %s",
-                 format_mac_address_pretty(info.src_addr).c_str());
-  on_broadcast:
-    - lambda: |-
-        ESP_LOGD("on_broadcast", "Broadcast trigger fired."); // A simple check
-        std::string data_str(data, data + size);
-        // Use ESP_LOGI to ensure the message is visible at INFO level and above
-        ESP_LOGI("espnow_receive", "Broadcast from %s: %s",
-                 format_mac_address_pretty(info.src_addr).c_str(), data_str.c_str());
+        // 1. Add the necessary header for the JSON utility.
+        #include "esphome/components/json/json_util.h"
+
+        // 2. Use reinterpret_cast to solve the type mismatch.
+        auto body = std::string(reinterpret_cast<const char*>(data), size);
+
+        // This part remains the same.
+        json::parse_json(body, [](JsonObject root) -> bool {
+          if (!root.containsKey("msg_type") || root["msg_type"] != "DATA") {
+            ESP_LOGW("espnow_parse", "Ignoring non-DATA message.");
+            return false;
+          }
+          if (!root.containsKey("voc_index") || !root.containsKey("nox_index")) {
+            ESP_LOGE("espnow_parse", "JSON is missing voc_index or nox_index.");
+            return false;
+          }
+
+          int voc = root["voc_index"];
+          int nox = root["nox_index"];
+
+          ESP_LOGI("espnow_receive", "Received DATA packet: VOC=%d, NOx=%d", voc, nox);
+          
+          return true;
+        });
