@@ -153,19 +153,19 @@ output:
 espnow:
   on_unknown_peer:
     - lambda: |-
-        // 1. Add the necessary header for the JSON utility.
-
-        // 2. Use reinterpret_cast to solve the type mismatch.
+        // No #include needed here anymore.
         auto body = std::string(reinterpret_cast<const char*>(data), size);
 
-        // This part remains the same.
         json::parse_json(body, [](JsonObject root) -> bool {
-          if (!root.containsKey("msg_type") || root["msg_type"] != "DATA") {
+          // New, safer checks. Is "msg_type" a string and does it equal "DATA"?
+          if (!root["msg_type"].is<const char*>() || root["msg_type"] != "DATA") {
             ESP_LOGW("espnow_parse", "Ignoring non-DATA message.");
             return false;
           }
-          if (!root.containsKey("voc_index") || !root.containsKey("nox_index")) {
-            ESP_LOGE("espnow_parse", "JSON is missing voc_index or nox_index.");
+
+          // New, safer checks. Are these keys present and are they integers?
+          if (!root["voc_index"].is<int>() || !root["nox_index"].is<int>()) {
+            ESP_LOGE("espnow_parse", "JSON is missing or has malformed voc/nox indices.");
             return false;
           }
 
