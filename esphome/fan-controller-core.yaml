@@ -6,9 +6,6 @@ esp32:
   framework:
     type: esp-idf
 
-logger:
-  level: DEBUG # Set the logging level to see all message
-
 json: # we wil be parsing json messages over espnow
 
 
