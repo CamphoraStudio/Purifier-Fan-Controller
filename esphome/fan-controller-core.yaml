@@ -11,6 +11,7 @@ logger:
 
 json: # we wil be parsing json messages over espnow
 
+
 # Turns on the 12V fan power rail at boot and keeps it on.
 switch:
   - platform: gpio
@@ -19,6 +20,15 @@ switch:
     name: "12V Rail"
     internal: false
     restore_mode: ALWAYS_ON
+
+# Create global variables to store the last received air quality data.
+globals:
+  - id: received_voc_index
+    type: int
+    initial_value: '0'
+  - id: received_nox_index
+    type: int
+    initial_value: '0'
 
 sensor:
   # Internal sensor to read the raw potentiometer voltage.
@@ -153,17 +163,12 @@ output:
 espnow:
   on_unknown_peer:
     - lambda: |-
-        // No #include needed here anymore.
         auto body = std::string(reinterpret_cast<const char*>(data), size);
 
         json::parse_json(body, [](JsonObject root) -> bool {
-          // New, safer checks. Is "msg_type" a string and does it equal "DATA"?
           if (!root["msg_type"].is<const char*>() || root["msg_type"] != "DATA") {
-            ESP_LOGW("espnow_parse", "Ignoring non-DATA message.");
             return false;
           }
-
-          // New, safer checks. Are these keys present and are they integers?
           if (!root["voc_index"].is<int>() || !root["nox_index"].is<int>()) {
             ESP_LOGE("espnow_parse", "JSON is missing or has malformed voc/nox indices.");
             return false;
@@ -172,7 +177,10 @@ espnow:
           int voc = root["voc_index"];
           int nox = root["nox_index"];
 
-          ESP_LOGI("espnow_receive", "Received DATA packet: VOC=%d, NOx=%d", voc, nox);
+          ESP_LOGI("espnow_receive", "Received DATA: VOC=%d, NOx=%d", voc, nox);
+          
+          id(received_voc_index) = voc;
+          id(received_nox_index) = nox;
           
           return true;
         });
