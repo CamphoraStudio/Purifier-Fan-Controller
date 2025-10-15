@@ -149,6 +149,10 @@ output:
     frequency: 25000 Hz
 
 espnow:
+  on_unknown_peer: # <-- ADD THIS BLOCK
+    - lambda: |-
+        ESP_LOGI("espnow_unknown_peer", "Received packet from UNKNOWN peer: %s",
+                 format_mac_address_pretty(info.src_addr).c_str());
   on_broadcast:
     - lambda: |-
         ESP_LOGD("on_broadcast", "Broadcast trigger fired."); // A simple check
