@@ -1,7 +1,7 @@
 # These substitutions allow the end user to override certain values
 substitutions:
-  name: "air-purifier"
-  friendly_name: "Air Purifier"
+  name: "purifier-fan-controller"
+  friendly_name: "Purifier Fan Controller"
 
 esphome:
   name: "${name}"
