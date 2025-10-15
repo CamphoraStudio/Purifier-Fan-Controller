@@ -6,7 +6,7 @@ esp32:
   framework:
     type: esp-idf
 
-json: # we wil be parsing json messages over espnow
+json: # parse json messages over espnow
 
 
 # Turns on the 12V fan power rail at boot and keeps it on.
@@ -56,20 +56,6 @@ sensor:
             }
             id(knob_position).publish_state(knob_position_level * 100.0);
 
-  # This sensor gets the Wi-Fi channel. It will be a number (e.g., 1, 6, 11).
-  - platform: template
-    name: "WiFi Channel"
-    id: wifi_channel
-    lambda: |-
-      if (wifi::global_wifi_component->is_connected()) {
-        return wifi::global_wifi_component->get_wifi_channel();
-      } else {
-        return NAN; // Return Not-a-Number if not connected
-      }
-    update_interval: 10s
-    accuracy_decimals: 0
-    icon: "mdi:radio-tower"
-
   # Exposed sensor for the physical knob's position.
   - platform: template
     name: "Knob Position"
@@ -79,10 +65,7 @@ sensor:
     accuracy_decimals: 1
     on_value:
       then:
-        # In manual mode, the Final Target Speed just mirrors the Knob Position.
-        - sensor.template.publish:
-            id: final_target_speed
-            state: !lambda 'return x;'
+        - script.execute: recalculate_fan_speed
 
   # Exposed sensor for the final, authoritative fan speed target.
   - platform: template
@@ -181,3 +164,46 @@ espnow:
           
           return true;
         });
+    - script.execute: recalculate_fan_speed
+
+
+script:
+  - id: recalculate_fan_speed
+    mode: single # Ensures only one calculation runs at a time.
+    then:
+      - lambda: |-
+          // 1. Get the current inputs.
+          float knob_percent = id(knob_position).state / 100.0f;
+          int voc = id(received_voc_index);
+          int nox = id(received_nox_index);
+
+          // 2. Determine AQI Level for each pollutant.
+          int voc_level = 0;
+          if (voc >= 400) voc_level = 3;
+          else if (voc >= 250) voc_level = 2;
+          else if (voc >= 150) voc_level = 1;
+
+          int nox_level = 0;
+          if (nox >= 300) nox_level = 3;
+          else if (nox >= 150) nox_level = 2;
+          else if (nox >= 20) nox_level = 1;
+
+          // 3. Select the worst-case level.
+          int worst_level = std::max(voc_level, nox_level);
+
+          // 4. Select the boost percentage.
+          float boost_percentage = 0.0f;
+          switch (worst_level) {
+            case 1: boost_percentage = 0.33f; break;
+            case 2: boost_percentage = 0.66f; break;
+            case 3: boost_percentage = 1.00f; break;
+          }
+
+          // 5. Calculate the final target speed.
+          float final_speed_level = knob_percent + ((1.0f - knob_percent) * boost_percentage);
+          
+          // 6. Publish the final value (as a percentage).
+          id(final_target_speed).publish_state(final_speed_level * 100.0f);
+          ESP_LOGD("auto_speed", "Knob:%.0f%%, VOC:%d(L%d), NOx:%d(L%d) -> Boost:%.0f%% -> Final:%.0f%%",
+                   knob_percent * 100.0f, voc, voc_level, nox, nox_level,
+                   boost_percentage * 100.0f, final_speed_level * 100.0f);
