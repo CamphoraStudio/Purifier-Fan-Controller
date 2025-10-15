@@ -6,6 +6,9 @@ esp32:
   framework:
     type: esp-idf
 
+logger:
+  level: DEBUG # Set the logging level to see all message
+
 # Turns on the 12V fan power rail at boot and keeps it on.
 switch:
   - platform: gpio
