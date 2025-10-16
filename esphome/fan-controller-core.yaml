@@ -28,6 +28,9 @@ globals:
   - id: operating_mode
     type: int
     initial_value: '0' # 0=Auto-Responsive, 1=Manual Override
+  - id: is_in_pairing_mode # <-- ADD THIS
+    type: bool
+    initial_value: 'false'
 
 text_sensor:
   - platform: template
@@ -192,13 +195,15 @@ espnow:
   on_unknown_peer:
     - lambda: |-
         auto body = std::string(reinterpret_cast<const char*>(data), size);
-        json::parse_json(body, [](JsonObject root) -> bool {
+        
+        // Change the capture clause from [] to [&]
+        json::parse_json(body, [&](JsonObject root) -> bool {
           // Check for PAIR_REQ message *if* in pairing mode
           if (id(is_in_pairing_mode) && root["msg_type"] == "PAIR_REQ") {
+            // Now this lambda can see and use the 'info' variable
             ESP_LOGI("pairing", "PAIR_REQ received from %s!", format_mac_address_pretty(info.src_addr).c_str());
-            // Future step: Save MAC address and send PAIR_ACK
-            id(is_in_pairing_mode) = false; // Exit pairing mode
-            script.stop: enter_pairing_mode;
+            id(is_in_pairing_mode) = false;
+            id(enter_pairing_mode).stop();
             return true;
           }
 
@@ -206,13 +211,12 @@ espnow:
           if (root["msg_type"] == "DATA" && root["voc_index"].is<int>() && root["nox_index"].is<int>()) {
             id(received_voc_index) = root["voc_index"];
             id(received_nox_index) = root["nox_index"];
-            script.execute: recalculate_fan_speed;
+            id(recalculate_fan_speed).execute();
             return true;
           }
 
           return false;
         });
-
 
 script:
   - id: toggle_manual_override
