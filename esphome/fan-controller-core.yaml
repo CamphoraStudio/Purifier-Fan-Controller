@@ -12,11 +12,9 @@ esphome:
     then:
       - if:
           condition:
-            # FIX: Access the string directly, no '.state' property.
             lambda: 'return !id(paired_aqm_mac).empty();'
           then:
-            - logger.log: "Found paired device on boot. Re-adding to peer list."
-            # FIX: Access the string directly here as well.
+            - logger.log: "Found paired device in flash. Re-adding to peer list."
             - espnow.peer.add:
                 address: !lambda 'return id(paired_aqm_mac);'
 
@@ -47,8 +45,8 @@ globals:
     type: bool
     initial_value: 'false'
   - id: paired_aqm_mac
-    type: std::string
-    restore_value: true # Correctly persists the string to flash
+    type: std::vector<uint8_t>
+    restore_value: true # Use the correct key to persist the vector
 
 text_sensor:
   - platform: template
@@ -214,21 +212,22 @@ espnow:
   auto_add_peer: false
   on_unknown_peer:
     - lambda: |-
+        // No #include needed for preferences anymore.
         auto body = std::string(reinterpret_cast<const char*>(data), size);
         json::parse_json(body, [&](JsonObject root) -> bool {
           if (id(is_in_pairing_mode) && root["msg_type"] == "PAIR_REQ") {
-            // FIX: Use the correct function 'format_mac_address_pretty'
-            // and assign the resulting string directly.
-            id(paired_aqm_mac) = format_mac_address_pretty(info.src_addr);
-
-            ESP_LOGI("pairing", "PAIR_REQ received. Saving MAC, adding peer, and starting ACK burst.");
+            ESP_LOGI("pairing", "PAIR_REQ received. Saving MAC to flash...");
             
-            // FIX: Call add_peer with the correct argument type (a pointer).
-            id(espnow_component).add_peer(info.src_addr);
+            // 1. Assign the raw MAC address vector directly to the global variable.
+            // ESPHome will handle saving this to flash automatically.
+            id(paired_aqm_mac).assign(info.src_addr, info.src_addr + 6);
 
+            // 2. Add the peer for the current session.
+            id(espnow_component).add_peer(info.src_addr);
+            
             id(is_in_pairing_mode) = false;
             id(enter_pairing_mode).stop();
-            id(send_ack_burst).execute(); 
+            id(send_ack_burst).execute();
             return true;
           }
           return false;
