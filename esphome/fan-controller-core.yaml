@@ -18,7 +18,6 @@ switch:
     internal: false
     restore_mode: ALWAYS_ON
 
-# Create global variables to store the last received air quality data.
 globals:
   - id: received_voc_index
     type: int
@@ -26,6 +25,19 @@ globals:
   - id: received_nox_index
     type: int
     initial_value: '0'
+  - id: operating_mode
+    type: int
+    initial_value: '0' # 0=Auto-Responsive, 1=Manual Override
+
+text_sensor:
+  - platform: template
+    name: "Operating Mode"
+    id: operating_mode_text
+    lambda: |-
+      if (id(operating_mode) == 1) {
+        return {"Manual Override (Temporary)"};
+      }
+      return {"Auto-Responsive"};
 
 sensor:
   # Internal sensor to read the raw potentiometer voltage.
@@ -168,42 +180,75 @@ espnow:
 
 
 script:
+  - id: toggle_manual_override
+    mode: single
+    then:
+      # Check the current mode and toggle it.
+      - if:
+          condition:
+            lambda: 'return id(operating_mode) == 0;'
+          # If in AUTO, switch to MANUAL
+          then:
+            - lambda: |-
+                ESP_LOGI("mode_switch", "Entering Manual Override for 1 hour.");
+                id(operating_mode) = 1;
+                id(operating_mode_text).publish_state("Manual Override (Temporary)");
+            - script.execute: manual_override_timer
+          # If in MANUAL, switch back to AUTO
+          else:
+            - lambda: |-
+                ESP_LOGI("mode_switch", "Reverting to Auto-Responsive mode.");
+                id(operating_mode) = 0;
+                id(operating_mode_text).publish_state("Auto-Responsive");
+            - script.stop: manual_override_timer
+      # Always recalculate the speed after a mode change.
+      - script.execute: recalculate_fan_speed
+
+  - id: manual_override_timer
+    mode: single # Use 'single' so it can be stopped.
+    then:
+      - delay: 1h
+      - lambda: |-
+          ESP_LOGI("mode_switch", "Manual override expired. Reverting to Auto-Responsive mode.");
+          id(operating_mode) = 0;
+          id(operating_mode_text).publish_state("Auto-Responsive");
+      - script.execute: recalculate_fan_speed
+
   - id: recalculate_fan_speed
-    mode: single # Ensures only one calculation runs at a time.
+    mode: single
     then:
       - lambda: |-
-          // 1. Get the current inputs.
+          float final_speed_level = 0.0f;
           float knob_percent = id(knob_position).state / 100.0f;
-          int voc = id(received_voc_index);
-          int nox = id(received_nox_index);
 
-          // 2. Determine AQI Level for each pollutant.
-          int voc_level = 0;
-          if (voc >= 400) voc_level = 3;
-          else if (voc >= 250) voc_level = 2;
-          else if (voc >= 150) voc_level = 1;
-
-          int nox_level = 0;
-          if (nox >= 300) nox_level = 3;
-          else if (nox >= 150) nox_level = 2;
-          else if (nox >= 20) nox_level = 1;
-
-          // 3. Select the worst-case level.
-          int worst_level = std::max(voc_level, nox_level);
-
-          // 4. Select the boost percentage.
-          float boost_percentage = 0.0f;
-          switch (worst_level) {
-            case 1: boost_percentage = 0.33f; break;
-            case 2: boost_percentage = 0.66f; break;
-            case 3: boost_percentage = 1.00f; break;
+          // SPEC 3.4.1: If knob is at 0%, fan is always OFF.
+          if (knob_percent == 0.0f) {
+            id(final_target_speed).publish_state(0.0f);
+            ESP_LOGD("auto_speed", "Knob is at 0%. Fan OFF.");
+            return;
           }
 
-          // 5. Calculate the final target speed.
-          float final_speed_level = knob_percent + ((1.0f - knob_percent) * boost_percentage);
+          // Check if in Manual Override mode
+          if (id(operating_mode) == 1) {
+            final_speed_level = knob_percent;
+            ESP_LOGD("auto_speed", "Manual Override Active. Speed set to Knob: %.0f%%", knob_percent * 100.0f);
+          } else { // Otherwise, run the full Auto-Responsive logic.
+            int voc = id(received_voc_index);
+            int nox = id(received_nox_index);
+
+            int voc_level = 0;
+            if (voc >= 400) voc_level = 3; else if (voc >= 250) voc_level = 2; else if (voc >= 150) voc_level = 1;
+            int nox_level = 0;
+            if (nox >= 300) nox_level = 3; else if (nox >= 150) nox_level = 2; else if (nox >= 20) nox_level = 1;
+
+            int worst_level = std::max(voc_level, nox_level);
+
+            float boost_percentage = 0.0f;
+            if (worst_level == 1) boost_percentage = 0.33f; else if (worst_level == 2) boost_percentage = 0.66f; else if (worst_level == 3) boost_percentage = 1.00f;
+
+            final_speed_level = knob_percent + ((1.0f - knob_percent) * boost_percentage);
+            ESP_LOGD("auto_speed", "Auto Mode. Knob:%.0f%%, Boost:%.0f%% -> Final:%.0f%%",
+                     knob_percent * 100.0f, boost_percentage * 100.0f, final_speed_level * 100.0f);
+          }
           
-          // 6. Publish the final value (as a percentage).
           id(final_target_speed).publish_state(final_speed_level * 100.0f);
-          ESP_LOGD("auto_speed", "Knob:%.0f%%, VOC:%d(L%d), NOx:%d(L%d) -> Boost:%.0f%% -> Final:%.0f%%",
-                   knob_percent * 100.0f, voc, voc_level, nox, nox_level,
-                   boost_percentage * 100.0f, final_speed_level * 100.0f);
