@@ -73,8 +73,7 @@ binary_sensor:
       # We define a "short click" as anything under 2 seconds.
       max_length: 2s
       then:
-        - logger.log: "SHORT CLICK: Pairing mode triggered."
-        # Placeholder for pairing logic.
+        - script.execute: enter_pairing_mode
 
 sensor:
   # Internal sensor to read the raw potentiometer voltage.
@@ -193,27 +192,26 @@ espnow:
   on_unknown_peer:
     - lambda: |-
         auto body = std::string(reinterpret_cast<const char*>(data), size);
-
         json::parse_json(body, [](JsonObject root) -> bool {
-          if (!root["msg_type"].is<const char*>() || root["msg_type"] != "DATA") {
-            return false;
-          }
-          if (!root["voc_index"].is<int>() || !root["nox_index"].is<int>()) {
-            ESP_LOGE("espnow_parse", "JSON is missing or has malformed voc/nox indices.");
-            return false;
+          // Check for PAIR_REQ message *if* in pairing mode
+          if (id(is_in_pairing_mode) && root["msg_type"] == "PAIR_REQ") {
+            ESP_LOGI("pairing", "PAIR_REQ received from %s!", format_mac_address_pretty(info.src_addr).c_str());
+            // Future step: Save MAC address and send PAIR_ACK
+            id(is_in_pairing_mode) = false; // Exit pairing mode
+            script.stop: enter_pairing_mode;
+            return true;
           }
 
-          int voc = root["voc_index"];
-          int nox = root["nox_index"];
+          // Handle normal DATA packets
+          if (root["msg_type"] == "DATA" && root["voc_index"].is<int>() && root["nox_index"].is<int>()) {
+            id(received_voc_index) = root["voc_index"];
+            id(received_nox_index) = root["nox_index"];
+            script.execute: recalculate_fan_speed;
+            return true;
+          }
 
-          ESP_LOGI("espnow_receive", "Received DATA: VOC=%d, NOx=%d", voc, nox);
-          
-          id(received_voc_index) = voc;
-          id(received_nox_index) = nox;
-          
-          return true;
+          return false;
         });
-    - script.execute: recalculate_fan_speed
 
 
 script:
@@ -297,5 +295,18 @@ script:
       # If the script reaches this point, the button has been held for 10s.
       - logger.log: "HOLD DETECTED: Factory reset initiated."
       # Placeholder for actual factory reset logic (e.g., changing LED color)
+
+  - id: enter_pairing_mode
+    mode: restart # Allows the timer to be reset if triggered again.
+    then:
+      - lambda: |-
+          ESP_LOGI("pairing", "Entered pairing mode for 3 minutes.");
+          id(is_in_pairing_mode) = true;
+      - delay: 3min
+      - lambda: |-
+          if (id(is_in_pairing_mode)) {
+            ESP_LOGI("pairing", "Pairing mode timed out.");
+            id(is_in_pairing_mode) = false;
+          }
 
 
