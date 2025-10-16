@@ -47,6 +47,32 @@ button:
     on_press:
       - script.execute: toggle_manual_override
 
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO9
+      mode: INPUT_PULLUP
+      inverted: true
+    internal: true
+    filters:
+      - delayed_on: 20ms
+
+    # Trigger for a SHORT press (Pairing Mode)
+    on_click:
+      # Trigger for a SHORT press (Pairing Mode)
+      - min_length: 2s
+        max_length: 5s
+        then:
+          - logger.log: "SHORT PRESS: Pairing mode triggered."
+          # Placeholder for future pairing logic script.
+
+      # Trigger for a LONG press (Factory Reset)
+      - min_length: 10s
+        then:
+          - logger.log: "LONG PRESS: Factory reset triggered."
+          # Placeholder for future factory reset script.
+
+
 sensor:
   # Internal sensor to read the raw potentiometer voltage.
   - platform: adc
