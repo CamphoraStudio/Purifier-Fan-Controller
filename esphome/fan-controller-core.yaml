@@ -219,29 +219,32 @@ espnow:
     - lambda: |-
         auto body = std::string(reinterpret_cast<const char*>(data), size);
         json::parse_json(body, [&](JsonObject root) -> bool {
+          // If this is a pairing request, call our new script.
           if (id(is_in_pairing_mode) && root["msg_type"] == "PAIR_REQ") {
-            // Convert the raw MAC bytes to a pretty string for saving
-            id(paired_aqm_mac) = format_mac_address_pretty(info.src_addr);
-
-            ESP_LOGI("pairing", "PAIR_REQ received. Saving MAC, adding peer, and starting ACK burst.");
-            id(espnow_component).add_peer(info.src_addr);
-            id(is_in_pairing_mode) = false;
-            id(enter_pairing_mode).stop();
-            id(send_ack_burst).execute(); 
+            id(handle_pairing_request).execute(info);
             return true;
           }
           return false;
         });
-  on_receive: # This now ONLY handles data from the trusted, paired peer.
+
+  on_broadcast:
     - lambda: |-
         auto body = std::string(reinterpret_cast<const char*>(data), size);
-        json::parse_json(body, [](JsonObject root) -> bool {
+        json::parse_json(body, [&](JsonObject root) -> bool {
+          // Also handle re-pairing requests from a known peer.
+          if (id(is_in_pairing_mode) && root["msg_type"] == "PAIR_REQ") {
+            id(handle_pairing_request).execute(info);
+            return true;
+          }
+
+          // This now correctly handles DATA packets from the paired device.
           if (root["msg_type"] == "DATA" && root["voc_index"].is<int>() && root["nox_index"].is<int>()) {
             id(received_voc_index) = root["voc_index"];
             id(received_nox_index) = root["nox_index"];
             id(recalculate_fan_speed).execute();
             return true;
           }
+
           return false;
         });
 
@@ -339,6 +342,25 @@ script:
             ESP_LOGI("pairing", "Pairing mode timed out.");
             id(is_in_pairing_mode) = false;
           }
+
+  - id: handle_pairing_request
+    # This script accepts the sender's info as an argument.
+    parameters:
+      info: espnow::ESPNowRecvInfo
+    mode: single
+    then:
+      - lambda: |-
+          // Convert the raw MAC bytes to a pretty string for saving
+          id(paired_aqm_mac) = format_mac_address_pretty(info.src_addr);
+
+          ESP_LOGI("pairing", "PAIR_REQ received. Saving MAC, adding peer, and starting ACK burst.");
+          
+          // Add the peer for the current session.
+          id(espnow_component).add_peer(info.src_addr);
+
+          id(is_in_pairing_mode) = false;
+          id(enter_pairing_mode).stop();
+      - script.execute: send_ack_burst
 
   - id: send_ack_burst
     mode: single
