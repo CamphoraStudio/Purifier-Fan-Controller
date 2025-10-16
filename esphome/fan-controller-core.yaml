@@ -39,6 +39,14 @@ text_sensor:
       }
       return {"Auto-Responsive"};
 
+button:
+  - platform: template
+    name: "Toggle Manual Override"
+    id: toggle_manual_override_button
+    icon: "mdi:hand-wave"
+    on_press:
+      - script.execute: toggle_manual_override
+
 sensor:
   # Internal sensor to read the raw potentiometer voltage.
   - platform: adc
