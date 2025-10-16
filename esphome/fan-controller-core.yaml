@@ -14,14 +14,15 @@ esphome:
           condition:
             lambda: 'return !id(paired_aqm_mac).empty();'
           then:
-            - logger.log: "Found paired MAC in flash. Re-adding to peer list."
+            - logger.log: "ON BOOT: Found paired MAC in flash. Re-adding peer..."
             - espnow.peer.add:
                 address: !lambda |-
-                  // Convert the saved MAC string back to a raw byte array
                   std::array<uint8_t, 6> mac;
                   sscanf(id(paired_aqm_mac).c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
                          &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]);
                   return mac;
+          else:
+            - logger.log: "ON BOOT: No paired MAC found in flash." 
 
 
 json: # parse json messages over espnow
@@ -70,6 +71,23 @@ button:
     icon: "mdi:hand-wave"
     on_press:
       - script.execute: toggle_manual_override
+  - platform: template # <-- NEW DEBUG BUTTON
+    name: "Debug Restore Pairing"
+    icon: "mdi:database-refresh"
+    on_press:
+      - if:
+          condition:
+            lambda: 'return !id(paired_aqm_mac).empty();'
+          then:
+            - logger.log: "DEBUG: Manually restoring peer from flash..."
+            - espnow.peer.add:
+                address: !lambda |-
+                  std::array<uint8_t, 6> mac;
+                  sscanf(id(paired_aqm_mac).c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+                         &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]);
+                  return mac;
+          else:
+            - logger.log: "DEBUG: No paired MAC found in flash to restore."
 
 binary_sensor:
   - platform: gpio
@@ -328,7 +346,7 @@ script:
       - delay: 10s
       # If the script reaches this point, the button has been held for 10s.
       - logger.log: "HOLD DETECTED: Factory reset initiated."
-      # Placeholder for actual factory reset logic (e.g., changing LED color)
+      - script.execute: factory_reset
 
   - id: enter_pairing_mode
     mode: restart # Allows the timer to be reset if triggered again.
@@ -378,6 +396,22 @@ script:
                   return mac;
                 data: '{"msg_type":"PAIR_ACK"}'
             - delay: 500ms
+
+  - id: factory_reset  # TODO: eventually it has to reset wifi too and force captive portal 
+    mode: single
+    then:
+      - if:
+          condition:
+            lambda: 'return !id(paired_aqm_mac).empty();'
+          then:
+            - logger.log: "FACTORY RESET: Clearing pairing info and deleting peer."
+            # Delete the peer from the current session.
+            - espnow.peer.delete:
+                address: !lambda 'return id(paired_aqm_mac);'
+            # Clear the persistent global variable.
+            - lambda: 'id(paired_aqm_mac) = "";'
+          else:
+            - logger.log: "FACTORY RESET: No pairing to clear."
 
 
 
