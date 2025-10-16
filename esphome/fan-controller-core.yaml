@@ -14,9 +14,14 @@ esphome:
           condition:
             lambda: 'return !id(paired_aqm_mac).empty();'
           then:
-            - logger.log: "Found paired device in flash. Re-adding to peer list."
+            - logger.log: "Found paired MAC in flash. Re-adding to peer list."
             - espnow.peer.add:
-                address: !lambda 'return id(paired_aqm_mac);'
+                address: !lambda |-
+                  // Convert the saved MAC string back to a raw byte array
+                  std::array<uint8_t, 6> mac;
+                  sscanf(id(paired_aqm_mac).c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+                         &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]);
+                  return mac;
 
 
 json: # parse json messages over espnow
@@ -45,8 +50,8 @@ globals:
     type: bool
     initial_value: 'false'
   - id: paired_aqm_mac
-    type: std::vector<uint8_t>
-    restore_value: true # Use the correct key to persist the vector
+    type: std::string      # Store the MAC as a string, the presistant storage works with strings but not C arrays 
+    restore_value: true  # which can be persistently saved to flash
 
 text_sensor:
   - platform: template
@@ -212,22 +217,17 @@ espnow:
   auto_add_peer: false
   on_unknown_peer:
     - lambda: |-
-        // No #include needed for preferences anymore.
         auto body = std::string(reinterpret_cast<const char*>(data), size);
         json::parse_json(body, [&](JsonObject root) -> bool {
           if (id(is_in_pairing_mode) && root["msg_type"] == "PAIR_REQ") {
-            ESP_LOGI("pairing", "PAIR_REQ received. Saving MAC to flash...");
-            
-            // 1. Assign the raw MAC address vector directly to the global variable.
-            // ESPHome will handle saving this to flash automatically.
-            id(paired_aqm_mac).assign(info.src_addr, info.src_addr + 6);
+            // Convert the raw MAC bytes to a pretty string for saving
+            id(paired_aqm_mac) = format_mac_address_pretty(info.src_addr);
 
-            // 2. Add the peer for the current session.
+            ESP_LOGI("pairing", "PAIR_REQ received. Saving MAC, adding peer, and starting ACK burst.");
             id(espnow_component).add_peer(info.src_addr);
-            
             id(is_in_pairing_mode) = false;
             id(enter_pairing_mode).stop();
-            id(send_ack_burst).execute();
+            id(send_ack_burst).execute(); 
             return true;
           }
           return false;
@@ -340,7 +340,7 @@ script:
             id(is_in_pairing_mode) = false;
           }
 
-  - id: send_ack_burst # <-- NEW SCRIPT
+  - id: send_ack_burst
     mode: single
     then:
       - repeat:
@@ -348,7 +348,12 @@ script:
           then:
             - logger.log: "Sending PAIR_ACK burst..."
             - espnow.send:
-                address: !lambda 'return id(paired_aqm_mac);'
+                address: !lambda |-
+                  // Do the same string-to-byte conversion here
+                  std::array<uint8_t, 6> mac;
+                  sscanf(id(paired_aqm_mac).c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+                         &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]);
+                  return mac;
                 data: '{"msg_type":"PAIR_ACK"}'
             - delay: 500ms
 
