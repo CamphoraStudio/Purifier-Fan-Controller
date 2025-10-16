@@ -53,25 +53,28 @@ binary_sensor:
       number: GPIO9
       mode: INPUT_PULLUP
       inverted: true
+    id: boot_button 
     internal: true
     filters:
       - delayed_on: 20ms
 
-    # Trigger for a SHORT press (Pairing Mode)
+    # Action 1: When the button is FIRST pressed down.
+    on_press:
+      # Start the 10-second countdown for the factory reset.
+      - script.execute: factory_reset_timer
+
+    # Action 2: When the button is RELEASED.
+    on_release:
+      # Cancel the factory reset countdown.
+      - script.stop: factory_reset_timer
+
+    # Action 3: If the press-and-release cycle was SHORT (a "click").
     on_click:
-      # Trigger for a SHORT press (Pairing Mode)
-      - min_length: 2s
-        max_length: 5s
-        then:
-          - logger.log: "SHORT PRESS: Pairing mode triggered."
-          # Placeholder for future pairing logic script.
-
-      # Trigger for a LONG press (Factory Reset)
-      - min_length: 10s
-        then:
-          - logger.log: "LONG PRESS: Factory reset triggered."
-          # Placeholder for future factory reset script.
-
+      # We define a "short click" as anything under 2 seconds.
+      max_length: 2s
+      then:
+        - logger.log: "SHORT CLICK: Pairing mode triggered."
+        # Placeholder for pairing logic.
 
 sensor:
   # Internal sensor to read the raw potentiometer voltage.
@@ -286,3 +289,13 @@ script:
           }
           
           id(final_target_speed).publish_state(final_speed_level * 100.0f);
+
+  - id: factory_reset_timer
+    mode: restart # 'restart' allows it to be started and stopped reliably.
+    then:
+      - delay: 10s
+      # If the script reaches this point, the button has been held for 10s.
+      - logger.log: "HOLD DETECTED: Factory reset initiated."
+      # Placeholder for actual factory reset logic (e.g., changing LED color)
+
+
