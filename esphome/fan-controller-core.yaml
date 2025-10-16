@@ -6,6 +6,18 @@ esp32:
   framework:
     type: esp-idf
 
+esphome:
+  on_boot:
+    priority: 200 # Runs after network is set up.
+    then:
+      - if:
+          condition:
+            lambda: 'return !id(paired_aqm_mac).empty();'
+          then:
+            - logger.log: "Found paired device on boot. Re-adding to peer list."
+            - espnow.peer.add:
+                address: !lambda 'return id(paired_aqm_mac);'
+
 json: # parse json messages over espnow
 
 
@@ -28,9 +40,12 @@ globals:
   - id: operating_mode
     type: int
     initial_value: '0' # 0=Auto-Responsive, 1=Manual Override
-  - id: is_in_pairing_mode # <-- ADD THIS
+  - id: is_in_pairing_mode 
     type: bool
     initial_value: 'false'
+  - id: paired_aqm_mac
+    type: std::vector<uint8_t>
+    restore_from_flash: true # This makes the pairing persistent
 
 text_sensor:
   - platform: template
@@ -192,29 +207,34 @@ output:
     frequency: 25000 Hz
 
 espnow:
+  id: espnow_component
+  auto_add_peer: false
   on_unknown_peer:
     - lambda: |-
         auto body = std::string(reinterpret_cast<const char*>(data), size);
-        
-        // Change the capture clause from [] to [&]
         json::parse_json(body, [&](JsonObject root) -> bool {
-          // Check for PAIR_REQ message *if* in pairing mode
           if (id(is_in_pairing_mode) && root["msg_type"] == "PAIR_REQ") {
-            // Now this lambda can see and use the 'info' variable
-            ESP_LOGI("pairing", "PAIR_REQ received from %s!", format_mac_address_pretty(info.src_addr).c_str());
+            ESP_LOGI("pairing", "PAIR_REQ received. Saving MAC, adding peer, and starting ACK burst.");
+            id(paired_aqm_mac).assign(info.src_addr, info.src_addr + 6);
+            id(espnow_component).add_peer({.addr = {info.src_addr[0], info.src_addr[1], info.src_addr[2], info.src_addr[3], info.src_addr[4], info.src_addr[5]}});
             id(is_in_pairing_mode) = false;
             id(enter_pairing_mode).stop();
+            // Call the new script instead of sending directly
+            id(send_ack_burst).execute(); 
             return true;
           }
-
-          // Handle normal DATA packets
+          return false;
+        });
+  on_receive: # This now ONLY handles data from the trusted, paired peer.
+    - lambda: |-
+        auto body = std::string(reinterpret_cast<const char*>(data), size);
+        json::parse_json(body, [](JsonObject root) -> bool {
           if (root["msg_type"] == "DATA" && root["voc_index"].is<int>() && root["nox_index"].is<int>()) {
             id(received_voc_index) = root["voc_index"];
             id(received_nox_index) = root["nox_index"];
             id(recalculate_fan_speed).execute();
             return true;
           }
-
           return false;
         });
 
@@ -312,5 +332,18 @@ script:
             ESP_LOGI("pairing", "Pairing mode timed out.");
             id(is_in_pairing_mode) = false;
           }
+
+  - id: send_ack_burst # <-- NEW SCRIPT
+    mode: single
+    then:
+      - repeat:
+          count: 3
+          then:
+            - logger.log: "Sending PAIR_ACK burst..."
+            - espnow.send:
+                address: !lambda 'return id(paired_aqm_mac);'
+                data: '{"msg_type":"PAIR_ACK"}'
+            - delay: 500ms
+
 
 
