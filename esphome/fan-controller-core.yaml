@@ -8,8 +8,9 @@ esp32:
 
 esphome:
   on_boot:
-    priority: 200
+    priority: -100.0 # Force the peer restore to run last
     then:
+      - delay: 1s # need delay to let everything else init first
       - if:
           condition:
             lambda: 'return !id(paired_aqm_mac).empty();'
@@ -71,23 +72,6 @@ button:
     icon: "mdi:hand-wave"
     on_press:
       - script.execute: toggle_manual_override
-  - platform: template # <-- NEW DEBUG BUTTON
-    name: "Debug Restore Pairing"
-    icon: "mdi:database-refresh"
-    on_press:
-      - if:
-          condition:
-            lambda: 'return !id(paired_aqm_mac).empty();'
-          then:
-            - logger.log: "DEBUG: Manually restoring peer from flash..."
-            - espnow.peer.add:
-                address: !lambda |-
-                  std::array<uint8_t, 6> mac;
-                  sscanf(id(paired_aqm_mac).c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
-                         &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]);
-                  return mac;
-          else:
-            - logger.log: "DEBUG: No paired MAC found in flash to restore."
 
 binary_sensor:
   - platform: gpio
@@ -405,10 +389,13 @@ script:
             lambda: 'return !id(paired_aqm_mac).empty();'
           then:
             - logger.log: "FACTORY RESET: Clearing pairing info and deleting peer."
-            # Delete the peer from the current session.
             - espnow.peer.delete:
-                address: !lambda 'return id(paired_aqm_mac);'
-            # Clear the persistent global variable.
+                address: !lambda |-
+                  // FIX: Add the string-to-byte conversion lambda here.
+                  std::array<uint8_t, 6> mac;
+                  sscanf(id(paired_aqm_mac).c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+                         &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]);
+                  return mac;
             - lambda: 'id(paired_aqm_mac) = "";'
           else:
             - logger.log: "FACTORY RESET: No pairing to clear."
