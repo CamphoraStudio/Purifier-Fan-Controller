@@ -3,23 +3,17 @@
 
 
 esphome:
-  # C++ helper for MAC address conversion from string to uint8_t array
-  # This injects the helper function directly into the firmware's global C++ scope.
+  # on boot, restore the saved MAC address as peer if we have one
   on_boot:
-    priority: 600.0 # High priority to define this function early.
+    priority: -100.0   # Ensure this runs after most other on_boot actions
     then:
-      - lambda: |-
-          // This block is just a container to define the function. It doesn't "run" anything.
-          #ifndef STRING_TO_MAC_DEFINED
-          #define STRING_TO_MAC_DEFINED
-          // Helper function converts a MAC string (e.g., "AA:BB:CC:DD:EE:FF") to a byte array.
-          std::array<uint8_t, 6> string_to_mac(const std::string& mac_string) {
-            std::array<uint8_t, 6> mac_bytes;
-            sscanf(mac_string.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
-                   &mac_bytes[0], &mac_bytes[1], &mac_bytes[2], &mac_bytes[3], &mac_bytes[4], &mac_bytes[5]);
-            return mac_bytes;
-          }
-          #endif
+      - delay: 1s      # Short delay to ensure everything is initialized
+      - if:
+          condition:
+            lambda: 'return !id(paired_aqm_mac).empty();'
+          then:
+            - espnow.peer.add:
+                address: !lambda 'return string_to_mac(id(paired_aqm_mac));'
 
 # include the JSON library, this is needed to parse and send ESP-NOW messages
 json:
@@ -39,17 +33,7 @@ espnow:
   id: espnow_component
   auto_add_peer: false
 
-  # on boot, restore the saved MAC address as peer if we have one
-  on_boot:
-    priority: -100.0   # Ensure this runs after most other on_boot actions
-    then:
-      - delay: 1s      # Short delay to ensure everything is initialized
-      - if:
-          condition:
-            lambda: 'return !id(paired_aqm_mac).empty();'
-          then:
-            - espnow.peer.add:
-                address: !lambda 'return string_to_mac(id(paired_aqm_mac));'
+
 
 
   on_unknown_peer: # Handle broadcasted messages from unpaired devices
