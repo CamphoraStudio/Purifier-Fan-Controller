@@ -1,4 +1,3 @@
-# These substitutions allow the end user to override certain values
 substitutions:
   name: "camphora-flow"
   friendly_name: "Camphora Flow"
@@ -37,4 +36,4 @@ wifi:
 captive_portal:
 
 packages:
-  device: !include flow-core.yaml
+  core: !include flow-core.yaml

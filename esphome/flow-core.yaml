@@ -8,12 +8,12 @@ substitutions:
 
 packages:
   # Import all espnow communication-related logic from the separate file.
-  comms: !include flow-esp-now.yaml
+  comms: !include flow-espnow.yaml
 
 esp32:
   board: esp32-c3-devkitm-1
   framework:
-    type: esp-idf   # I had issues with arduino here, made the chip unupdatable
+    type: esp-idf   # Don't use 'arduino' here, made the chip unflashable
 
 # --- Core Hardware & State ---
 switch:
@@ -57,7 +57,7 @@ binary_sensor:
     on_click:
       max_length: 2s
       then:
-        # This script is defined in the comms package.
+        # This script is defined in the flow-espnow package.
         - script.execute: enter_pairing_mode
 
 text_sensor:
