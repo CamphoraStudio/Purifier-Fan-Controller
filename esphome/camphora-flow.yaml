@@ -1,7 +1,7 @@
 # These substitutions allow the end user to override certain values
 substitutions:
-  name: "purifier-fan-controller"
-  friendly_name: "Purifier Fan Controller"
+  name: "camphora-flow"
+  friendly_name: "Camphora Flow"
 
 esphome:
   name: "${name}"
@@ -10,8 +10,8 @@ esphome:
 
 
   project:
-    name: camphora-studio.air-purifier
-    version: "0.1.1"
+    name: camphora-studio.flow
+    version: "0.2"
 
 # To be able to get logs from the device via serial and api.
 logger:
@@ -25,7 +25,7 @@ ota:
 
 # This should point to the public location of this yaml file.
 dashboard_import:
-  package_import_url: github://camphora-studio/air-purifier/esphome/air-purifier.yaml@main
+  package_import_url: github://camphora-studio/flow/esphome/camphora-flow.yaml@main
   import_full_config: false
 
 wifi:
@@ -37,4 +37,4 @@ wifi:
 captive_portal:
 
 packages:
-  device: !include fan-controller-core.yaml
+  device: !include flow-core.yaml
