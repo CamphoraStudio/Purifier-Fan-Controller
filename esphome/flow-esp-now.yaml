@@ -13,7 +13,12 @@ esphome:
             lambda: 'return !id(paired_aqm_mac).empty();'
           then:
             - espnow.peer.add:
-                address: !lambda 'return string_to_mac(id(paired_aqm_mac));'
+                # Simple, self-contained lambda for MAC conversion.
+                address: !lambda |-
+                  std::array<uint8_t, 6> mac;
+                  sscanf(id(paired_aqm_mac).c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+                          &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]);
+                  return mac;
 
 # include the JSON library, this is needed to parse and send ESP-NOW messages
 json:
@@ -32,9 +37,6 @@ globals:
 espnow:
   id: espnow_component
   auto_add_peer: false
-
-
-
 
   on_unknown_peer: # Handle broadcasted messages from unpaired devices
     - lambda: |-
@@ -108,7 +110,12 @@ script:
           then:
             - logger.log: "Sending PAIR_ACK..."
             - espnow.send:
-                address: !lambda 'return string_to_mac(id(paired_aqm_mac));'
+                # Simple, self-contained lambda for MAC conversion.
+                address: !lambda |-
+                  std::array<uint8_t, 6> mac;
+                  sscanf(id(paired_aqm_mac).c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+                         &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]);
+                  return mac;
                 data: '{"msg_type":"PAIR_ACK"}'
             - delay: 500ms
 
@@ -122,7 +129,12 @@ script:
           then:
             - logger.log: "ESP-NOW: Clearing pairing info and deleting peer."
             - espnow.peer.delete:
-                address: !lambda 'return string_to_mac(id(paired_aqm_mac));'
+                # Simple, self-contained lambda for MAC conversion.
+                address: !lambda |-
+                  std::array<uint8_t, 6> mac;
+                  sscanf(id(paired_aqm_mac).c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+                          &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]);
+                  return mac;
             - lambda: 'id(paired_aqm_mac) = "";'
           else:
             - logger.log: "ESP-NOW: No pairing to clear."
