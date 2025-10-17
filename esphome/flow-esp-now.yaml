@@ -1,0 +1,129 @@
+# flow-espnow-comms.yaml
+# This package handles ESP-NOW communication and pairing for the Camphora Flow device.
+
+# C++ helper for MAC address conversion from string to uint8_t array
+esphome:
+  includes:
+    - helpers.h
+
+# include the JSON library, this is needed to parse and send ESP-NOW messages
+json:
+
+globals:
+  # Store the MAC as a string, the presistant storage works with strings but not C arrays 
+  - id: paired_aqm_mac 
+    type: std::string      
+    restore_value: true
+
+  - id: is_in_pairing_mode
+    type: bool
+    initial_value: 'false'
+
+
+espnow:
+  id: espnow_component
+  auto_add_peer: false
+
+  # on boot, restore the saved MAC address as peer if we have one
+  on_boot:
+    priority: -100.0   # Ensure this runs after most other on_boot actions
+    then:
+      - delay: 1s      # Short delay to ensure everything is initialized
+      - if:
+          condition:
+            lambda: 'return !id(paired_aqm_mac).empty();'
+          then:
+            - espnow.peer.add:
+                address: !lambda 'return string_to_mac(id(paired_aqm_mac));'
+
+
+  on_unknown_peer: # Handle broadcasted messages from unpaired devices
+    - lambda: |-
+        auto body = std::string(reinterpret_cast<const char*>(data), size);
+        json::parse_json(body, [&](JsonObject root) -> bool {
+
+          // Got PAIR_REQ with MAC address. If in pairing mode, pair with it
+
+          if (id(is_in_pairing_mode) && root["msg_type"] == "PAIR_REQ") {
+            id(handle_pairing_request).execute(info); 
+            return true;
+          }
+          return false;
+        });
+
+  on_broadcast: # Handle broadcasted messages from paired devices
+    - lambda: |-
+        auto body = std::string(reinterpret_cast<const char*>(data), size);
+        json::parse_json(body, [&](JsonObject root) -> bool {
+
+          // Got PAIR_REQ with MAC address. If in pairing mode, pair with it, even from an already paired device
+
+          if (id(is_in_pairing_mode) && root["msg_type"] == "PAIR_REQ") {
+            id(handle_pairing_request).execute(info);
+            return true;
+          }
+
+          // Got DATA message with new sensor readings. Unpaired device DATA broadcast will trigger on_unknown_peer instead, not here.
+
+          if (root["msg_type"] == "DATA") {
+            id(received_voc_index) = root["voc_index"].as<int>();   // update global VOC
+            id(received_nox_index) = root["nox_index"].as<int>();   // update global NOX
+            id(recalculate_fan_speed).execute();                    // trigger fan speed recalculation with new data
+            return true;
+          }
+
+          return false;
+        });
+
+script:
+  # ---- Enter pairing mode for 1 minute ----
+  - id: enter_pairing_mode
+    mode: restart
+    then:
+      - lambda: |-
+          ESP_LOGI("pairing", "Entered pairing mode for 1 minute.");
+          id(is_in_pairing_mode) = true;
+      - delay: 1min
+      - lambda: |-
+          if (id(is_in_pairing_mode)) {
+            ESP_LOGI("pairing", "Pairing mode timed out.");
+            id(is_in_pairing_mode) = false;
+          }
+
+  # ---- Got a PAIR_REQ message with MAC address while in pairing mode. Save, add peer, and send acknowledgement. ----
+  - id: handle_pairing_request
+    parameters:
+      info: espnow::ESPNowRecvInfo
+    mode: single
+    then:
+      # Step 1: Save MAC, add peer, and exit pairing mode.
+      - lambda: |-
+          id(paired_aqm_mac) = format_mac_address_pretty(info.src_addr);
+          ESP_LOGI("pairing", "PAIR_REQ received. Saving MAC, adding peer, and sending ACK burst.");
+          id(espnow_component).add_peer(info.src_addr);
+          id(is_in_pairing_mode) = false;
+          id(enter_pairing_mode).stop();
+      # Step 2: Send the ACK burst 3 times
+      - repeat:
+          count: 3
+          then:
+            - logger.log: "Sending PAIR_ACK..."
+            - espnow.send:
+                address: !lambda 'return string_to_mac(id(paired_aqm_mac));'
+                data: '{"msg_type":"PAIR_ACK"}'
+            - delay: 500ms
+
+  # ---- Reset Logic: remove peer ----
+  - id: clear_espnow_pairing
+    mode: single
+    then:
+      - if:
+          condition:
+            lambda: 'return !id(paired_aqm_mac).empty();'
+          then:
+            - logger.log: "ESP-NOW: Clearing pairing info and deleting peer."
+            - espnow.peer.delete:
+                address: !lambda 'return string_to_mac(id(paired_aqm_mac));'
+            - lambda: 'id(paired_aqm_mac) = "";'
+          else:
+            - logger.log: "ESP-NOW: No pairing to clear."

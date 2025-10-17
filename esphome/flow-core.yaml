@@ -1,41 +1,28 @@
+# flow-core.yaml
+# Main firmware for the Camphora Flow Air Purifier Fan Controller
+# Handles all physical I/O and fan speed calculation.
+
 substitutions:
-  fan_offset_step: "0.01f" # Stagger each fan speed by 1% (0.01)
+   # Stagger each fan speed by 1% (0.01) to avoid resonance. Set to 0.0f to run all fans at the same speed.
+  fan_offset_step: "0.01f"
+
+packages:
+  # Import all espnow communication-related logic from the separate file.
+  comms: !include flow-esp-now.yaml
 
 esp32:
   board: esp32-c3-devkitm-1
   framework:
-    type: esp-idf
+    type: esp-idf   # I had issues with arduino here, made the chip unupdatable
 
-esphome:
-  on_boot:
-    priority: -100.0 # Force the peer restore to run last
-    then:
-      - delay: 1s # need delay to let everything else init first
-      - if:
-          condition:
-            lambda: 'return !id(paired_aqm_mac).empty();'
-          then:
-            - logger.log: "ON BOOT: Found paired MAC in flash. Re-adding peer..."
-            - espnow.peer.add:
-                address: !lambda |-
-                  std::array<uint8_t, 6> mac;
-                  sscanf(id(paired_aqm_mac).c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
-                         &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]);
-                  return mac;
-          else:
-            - logger.log: "ON BOOT: No paired MAC found in flash." 
-
-
-json: # parse json messages over espnow
-
-
-# Turns on the 12V fan power rail at boot and keeps it on.
+# --- Core Hardware & State ---
 switch:
+  # this one will be gone on hardware V2
   - platform: gpio
     pin: GPIO18
     id: enable_12v
     name: "12V Rail"
-    internal: false
+    internal: true
     restore_mode: ALWAYS_ON
 
 globals:
@@ -48,12 +35,30 @@ globals:
   - id: operating_mode
     type: int
     initial_value: '0' # 0=Auto-Responsive, 1=Manual Override
-  - id: is_in_pairing_mode 
-    type: bool
-    initial_value: 'false'
-  - id: paired_aqm_mac
-    type: std::string      # Store the MAC as a string, the presistant storage works with strings but not C arrays 
-    restore_value: true  # which can be persistently saved to flash
+
+# --- Physical User Interface ---
+binary_sensor:
+  # the boot button to flash, also used as the paring/factory reset button
+  - platform: gpio
+    pin:
+      number: GPIO9
+      mode: INPUT_PULLUP
+      inverted: true
+    name: "Setup Button"
+    filters:
+      - delayed_on: 20ms
+    # When the button is FIRST pressed down, start factory reset countdwon
+    on_press:
+      - script.execute: factory_reset_timer
+    # When the button is RELEASED, stop factory reset countdown, if < time limit, factory reset won't happen
+    on_release:
+      - script.stop: factory_reset_timer
+    # If the press release is quick, it's a short press, so enter pairing mode
+    on_click:
+      max_length: 2s
+      then:
+        # This script is defined in the comms package.
+        - script.execute: enter_pairing_mode
 
 text_sensor:
   - platform: template
@@ -73,34 +78,6 @@ button:
     on_press:
       - script.execute: toggle_manual_override
 
-binary_sensor:
-  - platform: gpio
-    pin:
-      number: GPIO9
-      mode: INPUT_PULLUP
-      inverted: true
-    id: boot_button 
-    internal: true
-    filters:
-      - delayed_on: 20ms
-
-    # Action 1: When the button is FIRST pressed down.
-    on_press:
-      # Start the 10-second countdown for the factory reset.
-      - script.execute: factory_reset_timer
-
-    # Action 2: When the button is RELEASED.
-    on_release:
-      # Cancel the factory reset countdown.
-      - script.stop: factory_reset_timer
-
-    # Action 3: If the press-and-release cycle was SHORT (a "click").
-    on_click:
-      # We define a "short click" as anything under 2 seconds.
-      max_length: 2s
-      then:
-        - script.execute: enter_pairing_mode
-
 sensor:
   # Internal sensor to read the raw potentiometer voltage.
   - platform: adc
@@ -117,6 +94,7 @@ sensor:
     on_value:
       then:
         - lambda: |-
+            // Calibrates raw voltage to a clean 0-100% knob position.
             const float OFF_ZONE_VOLTAGE = 0.1f;
             const float GUARD_BAND_VOLTAGE = 2.75f;
             float knob_position_level = 0.0f;
@@ -130,7 +108,7 @@ sensor:
             }
             id(knob_position).publish_state(knob_position_level * 100.0);
 
-  # Exposed sensor for the physical knob's position.
+  # Expose to HA for the physical knob's position, if knob changed, recalculate fan speed.
   - platform: template
     name: "Knob Position"
     id: knob_position
@@ -141,7 +119,7 @@ sensor:
       then:
         - script.execute: recalculate_fan_speed
 
-  # Exposed sensor for the final, authoritative fan speed target.
+  # Exposed to HA for the final, authoritative fan speed target.
   - platform: template
     name: "Final Target Speed"
     id: final_target_speed
@@ -151,6 +129,8 @@ sensor:
     on_value:
       then:
         - lambda: |-
+            // Translate the final target speed (0-100%) into the five staggered PWM signals for the physical fans (10-100% duty cycle).
+            // The minimum starts at 10% to ensure the fans can actually start spinning.
             float target_speed_level = x / 100.0f;
             
             if (target_speed_level == 0.0f) {
@@ -177,7 +157,7 @@ sensor:
               id(pwm_fan_5).set_level(calculate_pwm(fan_5_target));
             }
 
-  # Tachometer Sensor with corrected RPM calculation.
+  # Tachometer Sensor for reading fan RPM from one fan.
   - platform: pulse_counter
     pin:
       number: GPIO1
@@ -191,7 +171,7 @@ sensor:
     icon: "mdi:fan-clock"
     accuracy_decimals: 0
 
-# Define all 5 PWM fan outputs.
+# --- Fan PWM Outputs ---
 output:
   - platform: ledc
     pin: GPIO3
@@ -214,69 +194,30 @@ output:
     id: pwm_fan_5
     frequency: 25000 Hz
 
-espnow:
-  id: espnow_component
-  auto_add_peer: false
-  on_unknown_peer:
-    - lambda: |-
-        auto body = std::string(reinterpret_cast<const char*>(data), size);
-        json::parse_json(body, [&](JsonObject root) -> bool {
-          // If this is a pairing request, call our new script.
-          if (id(is_in_pairing_mode) && root["msg_type"] == "PAIR_REQ") {
-            id(handle_pairing_request).execute(info);
-            return true;
-          }
-          return false;
-        });
-
-  on_broadcast:
-    - lambda: |-
-        auto body = std::string(reinterpret_cast<const char*>(data), size);
-        json::parse_json(body, [&](JsonObject root) -> bool {
-          // Also handle re-pairing requests from a known peer.
-          if (id(is_in_pairing_mode) && root["msg_type"] == "PAIR_REQ") {
-            id(handle_pairing_request).execute(info);
-            return true;
-          }
-
-          // This now correctly handles DATA packets from the paired device.
-          if (root["msg_type"] == "DATA" && root["voc_index"].is<int>() && root["nox_index"].is<int>()) {
-            id(received_voc_index) = root["voc_index"];
-            id(received_nox_index) = root["nox_index"];
-            id(recalculate_fan_speed).execute();
-            return true;
-          }
-
-          return false;
-        });
-
+# --- Core Logic Scripts ---
 script:
   - id: toggle_manual_override
     mode: single
     then:
-      # Check the current mode and toggle it.
       - if:
           condition:
-            lambda: 'return id(operating_mode) == 0;'
-          # If in AUTO, switch to MANUAL
-          then:
+            lambda: 'return id(operating_mode) == 0;' # If in AUTO
+          then: # Switch to MANUAL
             - lambda: |-
                 ESP_LOGI("mode_switch", "Entering Manual Override for 1 hour.");
                 id(operating_mode) = 1;
                 id(operating_mode_text).publish_state("Manual Override (Temporary)");
             - script.execute: manual_override_timer
-          # If in MANUAL, switch back to AUTO
-          else:
+          else: # If in MANUAL, switch back to AUTO
             - lambda: |-
                 ESP_LOGI("mode_switch", "Reverting to Auto-Responsive mode.");
                 id(operating_mode) = 0;
                 id(operating_mode_text).publish_state("Auto-Responsive");
             - script.stop: manual_override_timer
-      # Always recalculate the speed after a mode change.
       - script.execute: recalculate_fan_speed
 
   - id: manual_override_timer
-    mode: single # Use 'single' so it can be stopped.
+    mode: single
     then:
       - delay: 1h
       - lambda: |-
@@ -292,21 +233,22 @@ script:
           float final_speed_level = 0.0f;
           float knob_percent = id(knob_position).state / 100.0f;
 
-          // SPEC 3.4.1: If knob is at 0%, fan is always OFF.
+          // Knob at 0% always means OFF.
           if (knob_percent == 0.0f) {
             id(final_target_speed).publish_state(0.0f);
             ESP_LOGD("auto_speed", "Knob is at 0%. Fan OFF.");
             return;
           }
 
-          // Check if in Manual Override mode
+          // In manual mode, speed equals knob position.
           if (id(operating_mode) == 1) {
             final_speed_level = knob_percent;
             ESP_LOGD("auto_speed", "Manual Override Active. Speed set to Knob: %.0f%%", knob_percent * 100.0f);
-          } else { // Otherwise, run the full Auto-Responsive logic.
+          } else { // In auto mode, calculate boost based on sensor data.
             int voc = id(received_voc_index);
             int nox = id(received_nox_index);
 
+            // Determine pollution level (0-3) for VOC and NOx
             int voc_level = 0;
             if (voc >= 400) voc_level = 3; else if (voc >= 250) voc_level = 2; else if (voc >= 150) voc_level = 1;
             int nox_level = 0;
@@ -314,9 +256,13 @@ script:
 
             int worst_level = std::max(voc_level, nox_level);
 
+            // Determine boost based on the worst pollution level
             float boost_percentage = 0.0f;
-            if (worst_level == 1) boost_percentage = 0.33f; else if (worst_level == 2) boost_percentage = 0.66f; else if (worst_level == 3) boost_percentage = 1.00f;
+            if (worst_level == 1) boost_percentage = 0.33f;
+            else if (worst_level == 2) boost_percentage = 0.66f;
+            else if (worst_level == 3) boost_percentage = 1.00f;
 
+            // Final speed = base speed + proportional boost of the remaining range
             final_speed_level = knob_percent + ((1.0f - knob_percent) * boost_percentage);
             ESP_LOGD("auto_speed", "Auto Mode. Knob:%.0f%%, Boost:%.0f%% -> Final:%.0f%%",
                      knob_percent * 100.0f, boost_percentage * 100.0f, final_speed_level * 100.0f);
@@ -324,81 +270,19 @@ script:
           
           id(final_target_speed).publish_state(final_speed_level * 100.0f);
 
+  # ---- Factory Reset Logic ----
   - id: factory_reset_timer
-    mode: restart # 'restart' allows it to be started and stopped reliably.
+    mode: restart
     then:
       - delay: 10s
-      # If the script reaches this point, the button has been held for 10s.
       - logger.log: "HOLD DETECTED: Factory reset initiated."
       - script.execute: factory_reset
 
-  - id: enter_pairing_mode
-    mode: restart # Allows the timer to be reset if triggered again.
-    then:
-      - lambda: |-
-          ESP_LOGI("pairing", "Entered pairing mode for 3 minutes.");
-          id(is_in_pairing_mode) = true;
-      - delay: 3min
-      - lambda: |-
-          if (id(is_in_pairing_mode)) {
-            ESP_LOGI("pairing", "Pairing mode timed out.");
-            id(is_in_pairing_mode) = false;
-          }
-
-  - id: handle_pairing_request
-    # This script accepts the sender's info as an argument.
-    parameters:
-      info: espnow::ESPNowRecvInfo
+  - id: factory_reset
     mode: single
     then:
-      - lambda: |-
-          // Convert the raw MAC bytes to a pretty string for saving
-          id(paired_aqm_mac) = format_mac_address_pretty(info.src_addr);
-
-          ESP_LOGI("pairing", "PAIR_REQ received. Saving MAC, adding peer, and starting ACK burst.");
-          
-          // Add the peer for the current session.
-          id(espnow_component).add_peer(info.src_addr);
-
-          id(is_in_pairing_mode) = false;
-          id(enter_pairing_mode).stop();
-      - script.execute: send_ack_burst
-
-  - id: send_ack_burst
-    mode: single
-    then:
-      - repeat:
-          count: 3
-          then:
-            - logger.log: "Sending PAIR_ACK burst..."
-            - espnow.send:
-                address: !lambda |-
-                  // Do the same string-to-byte conversion here
-                  std::array<uint8_t, 6> mac;
-                  sscanf(id(paired_aqm_mac).c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
-                         &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]);
-                  return mac;
-                data: '{"msg_type":"PAIR_ACK"}'
-            - delay: 500ms
-
-  - id: factory_reset  # TODO: eventually it has to reset wifi too and force captive portal 
-    mode: single
-    then:
-      - if:
-          condition:
-            lambda: 'return !id(paired_aqm_mac).empty();'
-          then:
-            - logger.log: "FACTORY RESET: Clearing pairing info and deleting peer."
-            - espnow.peer.delete:
-                address: !lambda |-
-                  // FIX: Add the string-to-byte conversion lambda here.
-                  std::array<uint8_t, 6> mac;
-                  sscanf(id(paired_aqm_mac).c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
-                         &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]);
-                  return mac;
-            - lambda: 'id(paired_aqm_mac) = "";'
-          else:
-            - logger.log: "FACTORY RESET: No pairing to clear."
-
-
-
+      # Step 1: Call the script in the comms package to clear pairing.
+      - script.execute: clear_espnow_pairing
+      # Step 2: Add other core device reset actions here (e.g., Wi-Fi).
+      # - wifi.delete_sta_config:
+      - logger.log: "CORE: Factory reset complete."
